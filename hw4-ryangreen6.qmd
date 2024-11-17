@@ -1,26 +1,172 @@
 ---
-title: "hw4-ryangreen6"
-format: html
-editor: visual
+title: "Homework Assignment #4"
+subtitle: " "
+author: "Ryan Green"
+date: 11/16/24
+execute:
+  warning: false
+  message: false
+  results: hide
+format:
+  html:
+    toc: true
+editor_options: 
+  chunk_output_type: console
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
-```{r}
-1 + 1
+Loading Libraries
+```{r, Loading Libraries}
+library(sf) 
+library(tmap)
+library(here)
+library(terra)
+library(stars)
+library(dplyr)
+library(tidyverse)
+library(RColorBrewer)
 ```
 
-You can add options to executable code like this
+```{r, Loading Data}
+depth <- rast(here::here("data", "depth.tif"))
 
-```{r}
-#| echo: false
-2 * 2
+westcoast <- st_read(here::here("data", "wc_regions_clean.shp"))
+
+sst08 <- rast(here::here("data", "average_annual_sst_2008.tif"))
+sst09 <- rast(here::here("data", "average_annual_sst_2009.tif"))
+sst10 <- rast(here::here("data", "average_annual_sst_2010.tif"))
+sst11 <- rast(here::here("data", "average_annual_sst_2011.tif"))
+sst12 <- rast(here::here("data", "average_annual_sst_2012.tif"))
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+```{r, CRS Transformation}
+sst08 <- terra::project(sst08, "EPSG:4326")
+sst09 <- terra::project(sst09, "EPSG:4326")
+sst10 <- terra::project(sst10, "EPSG:4326")
+sst11 <- terra::project(sst11, "EPSG:4326")
+sst12 <- terra::project(sst12, "EPSG:4326")
+elevation <- terra::project(depth, "EPSG:4326")
+westcoast <- st_transform(westcoast, crs = 4326)
+```
+
+```{r, CRS Check}
+rasters <- list(sst08, sst09, sst10, sst11, sst12, elevation)
+names(rasters) <- c("sst08", "sst09", "sst10", "sst11", "sst12", "elevation")
+
+for (i in seq_along(rasters)) {
+  if (st_crs(rasters[[i]]) != st_crs(4326)) {
+    message(paste("Reprojection of", names(rasters)[i], "FAILED"))
+  } else {
+    message(paste("CRS of", names(rasters)[i], "CONFIRMED as EPSG:4326"))
+  }
+}
+
+if (st_crs(westcoast)$epsg == 4326) {
+  message("CRS of westcoast CONFIRMED as EPSG:4326")
+} else {
+  message("Reprojection of 'westcoast' FAILED")
+}
+```
+
+```{r, Calculate and Resample Mean SST}
+sst_stack <- rast(list(sst08, sst09, sst10, sst11, sst12))
+
+mean_sst <- mean(sst_stack, na.rm = TRUE) - 273.5
+
+elevation <- crop(elevation, ext(mean_sst))
+
+elevation <- resample(elevation, mean_sst, method = "near")
+```
+
+```{r, Map of Bathymetry}
+below_zero_breaks <- c(-6000, -5500, -5000, -4500, -4000, -3500, -3000, -2500, -2000, -1500, -1000, -500, -400, -300, -200, -100, 0)
+above_zero_breaks <- c(0, 25, 50, 75, 100, 200, 300, 400, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 5600, 7000)
+
+below_zero_palette <- colorRampPalette(c("#07073D", "royalblue2"))(length(below_zero_breaks) - 1)
+
+above_zero_palette <- colorRampPalette(c("#5C653F", "#323615", "aliceblue"))(length(above_zero_breaks) - 1)
+
+breaks <- c(below_zero_breaks, above_zero_breaks[-1])
+
+palette <- c(below_zero_palette, above_zero_palette)
+
+
+# REMOVE BEFORE TURNING IN!
+
+if (length(palette) != length(breaks) - 1) {
+  stop("The number of colors must be equal to the number of breaks minus one.")
+}
+# REMOVE BEFORE TURNING IN!
+
+tm_shape(elevation) +
+  tm_raster(palette = palette, breaks = breaks, title = "Elevation (m)", style = "fixed") +
+tm_layout(legend.outside = TRUE,
+          legend.outside.position = "right",
+          frame = TRUE,
+          frame.double.line = TRUE,
+          bg.color = "seashell1")
+```
+
+```{r, Map of Mean SST}
+land <- elevation
+land[land <= 0] <- NA
+
+above_zero_palette_greys <- colorRampPalette(c("grey40", "grey90"))(length(above_zero_breaks) - 1)
+
+temp_breaks <- seq(from = 0, to = 20, by = 0.5)
+temp_palette <- colorRampPalette(c("aliceblue", "darkred"))(length(temp_breaks) - 1)
+
+tm_shape(land) +
+  tm_raster(palette = above_zero_palette_greys, breaks = above_zero_breaks, title = "Elevation (m)", style = "fixed") +
+tm_shape(mean_sst) +
+  tm_raster(palette = temp_palette, breaks = temp_breaks) +
+tm_layout(legend.outside = TRUE,
+          legend.outside.position = "right",
+          inner.margins = c(0, 0, 0, 0),
+          bg.color = "grey40")
+```
+
+OYSTERS
+
+```{r}
+oyster_temp <- mean_sst
+oyster_depth <- elevation
+
+oyster_temp[oyster_temp >= 11 & oyster_temp <= 30] <- 1
+oyster_temp[oyster_temp < 11 | oyster_temp > 30] <- 0
+
+oyster_depth[oyster_depth >= -70 & oyster_depth <= 0] <- 1
+oyster_depth[oyster_depth < -70 | oyster_depth > 0] <- 0
+
+oyster_territory <- lapp(c(oyster_temp, oyster_depth), fun = function(x, y) { x * y })
+```
+
+
+```{r}
+rasterized_eez <- rasterize(westcoast, oyster_territory, field = "rgn_id", touches = TRUE)
+
+cell_areas <- cellSize(oyster_territory, unit = "km") 
+
+suitable_mask <- mask(oyster_territory, rasterized_eez)
+
+suitable_areas <- suitable_mask * cell_areas
+
+suitable_area_by_eez <- zonal(suitable_areas, rasterized_eez, fun = "sum", na.rm = TRUE)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
