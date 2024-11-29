@@ -22,14 +22,17 @@ library(here)
 library(terra)
 library(stars)
 library(dplyr)
+library(raster)
 library(tidyverse)
 library(RColorBrewer)
 ```
 
 ```{r, Loading Data}
+rm(list = ls())
+
 depth <- rast(here::here("data", "depth.tif"))
 
-westcoast <- st_read(here::here("data", "wc_regions_clean.shp"))
+eez <- st_read(here::here("data", "wc_regions_clean.shp"))
 
 sst08 <- rast(here::here("data", "average_annual_sst_2008.tif"))
 sst09 <- rast(here::here("data", "average_annual_sst_2009.tif"))
@@ -45,7 +48,7 @@ sst10 <- terra::project(sst10, "EPSG:4326")
 sst11 <- terra::project(sst11, "EPSG:4326")
 sst12 <- terra::project(sst12, "EPSG:4326")
 elevation <- terra::project(depth, "EPSG:4326")
-westcoast <- st_transform(westcoast, crs = 4326)
+eez <- st_transform(eez, crs = 4326)
 ```
 
 ```{r, CRS Check}
@@ -60,10 +63,10 @@ for (i in seq_along(rasters)) {
   }
 }
 
-if (st_crs(westcoast)$epsg == 4326) {
-  message("CRS of westcoast CONFIRMED as EPSG:4326")
+if (st_crs(eez)$epsg == 4326) {
+  message("CRS of eez CONFIRMED as EPSG:4326")
 } else {
-  message("Reprojection of 'westcoast' FAILED")
+  message("Reprojection of 'eez' FAILED")
 }
 ```
 
@@ -118,49 +121,217 @@ temp_palette <- colorRampPalette(c("aliceblue", "darkred"))(length(temp_breaks) 
 tm_shape(land) +
   tm_raster(palette = above_zero_palette_greys, breaks = above_zero_breaks, title = "Elevation (m)", style = "fixed") +
 tm_shape(mean_sst) +
-  tm_raster(palette = temp_palette, breaks = temp_breaks) +
+  tm_raster(palette = temp_palette, breaks = temp_breaks, title = "Mean Sea Surface Temperature (C)") +
 tm_layout(legend.outside = TRUE,
           legend.outside.position = "right",
           inner.margins = c(0, 0, 0, 0),
           bg.color = "grey40")
 ```
 
-OYSTERS
+## OYSTERS
 
-```{r}
+```{r, Oyster Temp}
+# Making a copy of mean_sst, just for our oysters :)
 oyster_temp <- mean_sst
+
+# Establishing reclassification matrix for oyster_temp
+rcl_temp <- matrix(c(-Inf, 11, 1,
+                11, 30, 0,
+                30, Inf, 1), 
+                ncol = 3, byrow = TRUE)
+
+# Reclassifying oyster_temp based on the matrix
+oyster_temp <- classify(oyster_temp, rcl = rcl_temp)
+
+# Overwriting oyster_temp values as factor
+oyster_temp <- as.factor(oyster_temp)
+```
+
+```{r, Oyster Depth}
+# Just like oyster_temp, copying the elevation raster for oyster_depth
 oyster_depth <- elevation
 
-oyster_temp[oyster_temp >= 11 & oyster_temp <= 30] <- 1
-oyster_temp[oyster_temp < 11 | oyster_temp > 30] <- 0
+# Establishing reclassification matrix for oyster_depth
+rcl_depth <- matrix(c(-Inf, -70, 0,
+                -70, 0, 1,
+                0, Inf, 0), 
+                ncol = 3, byrow = TRUE)
 
-oyster_depth[oyster_depth >= -70 & oyster_depth <= 0] <- 1
-oyster_depth[oyster_depth < -70 | oyster_depth > 0] <- 0
+# Reclassifying oyster_depth based on the matrix
+oyster_depth <- classify(oyster_depth, rcl = rcl_depth)
 
-oyster_territory <- lapp(c(oyster_temp, oyster_depth), fun = function(x, y) { x * y })
+# Overwriting oyster_depth values as factor
+oyster_depth <- as.factor(oyster_depth)
 ```
 
+```{r, Oyster Checks}
+# Running CRS, Extent, Resolution, and NA values checks for oyster_temp and oyster_depth
+checks <- list(
+  ext_check = ext(oyster_temp) == ext(oyster_depth),
+  res_check = res(oyster_temp) == res(oyster_depth),
+  crs_check = crs(oyster_temp) == crs(oyster_depth),
+  nan_check_temp = !any(is.nan(values(oyster_temp))),
+  nan_check_depth = !any(is.nan(values(oyster_depth)))
+)
 
-```{r}
-rasterized_eez <- rasterize(westcoast, oyster_territory, field = "rgn_id", touches = TRUE)
+for (check_name in names(checks)) {
+  check_result <- checks[[check_name]]
+  print(paste(check_name, ":", check_result))
+}
 
-cell_areas <- cellSize(oyster_territory, unit = "km") 
-
-suitable_mask <- mask(oyster_territory, rasterized_eez)
-
-suitable_areas <- suitable_mask * cell_areas
-
-suitable_area_by_eez <- zonal(suitable_areas, rasterized_eez, fun = "sum", na.rm = TRUE)
-
-
+if (all(c(checks$ext_check, checks$res_check, checks$crs_check) == TRUE) &
+    all(c(checks$nan_check_temp, checks$nan_check_depth) == TRUE)) {
+  print("Checks passed")
+} else {
+  print("Checks failed")
+}
 ```
 
+```{r, Oyster Territory Raster}
+# Finding suitable oyster territory based on depth and temp
+oyster_territory <- (oyster_depth * oyster_temp)
 
+# Saving as factor
+oyster_territory <- as.factor(oyster_territory)
 
+# Setting 0 values to NA, to only get the suitable area in the oyster_territory raster
+values(oyster_territory)[values(oyster_territory) == 0] <- NA
 
+# Transforming eez to the same CRS as oyster_territory
+eez <- st_transform(eez, crs = crs(oyster_territory))
 
+# Rasterizing eez
+eez_raster <- rasterize(eez, oyster_territory, field = "rgn_id")
 
+# Finding the suitable territory within each eez
+oyster_eez <- (oyster_territory * eez_raster)
+```
 
+```{r, Oyster Territory Info}
+# Reprojecting oyster_territory to a CRS that uses square meters, rather than degrees
+oyster_territory_m <- project(oyster_eez, "EPSG:3395")
+
+# Finding resolution of oyster_territory_m
+cell_size <- res(oyster_territory_m)
+
+# Calculating area of a single cell
+cell_area_m2 <- prod(cell_size)
+
+# Converting to square KM
+cell_area_km2 <- cell_area_m2 / 1000000
+
+# Getting the count of each unique value in oyster_territory_m
+value_counts <- freq(oyster_territory_m)
+
+# Calculating total area for each value
+value_counts$area_km2 <- value_counts$count * cell_area_km2
+
+# Renaming column referring to EEZ to "rgn_id", so that I can join the region names to this dataframe
+colnames(value_counts)[colnames(value_counts) == "value"] <- "rgn_id"
+
+# Dropping eez geometry to make it a dataframe
+region_info <- eez %>%
+  st_drop_geometry()
+
+# Joining region_info with value_counts to add region names to the dataframe
+value_counts <- region_info %>%
+  left_join(value_counts, by = "rgn_id") %>%
+  dplyr::select(-area_m2, -area_km2.x, -layer, -rgn_key) %>%
+  mutate(across(everything(), ~replace(., is.na(.), 0)))
+
+# Making a nice kable table, nice!
+kableExtra::kable(value_counts, 
+                  format = "simple", 
+                  col.names = c("Region", 
+                                "Region ID", 
+                                "Cell Count", 
+                                "Area, Km^2"), 
+                  caption = "Suitable Oyster Cultivation Territory in West Coast EEZs",
+                  align = "l",
+                  digits = 2)
+```
+
+## Herring
+
+```{r, Herring Temp}
+# Finding suitable territory for Herring, using the same steps as the oysters
+
+herring_temp <- mean_sst
+herring_temp[is.nan(herring_temp)] <- 0
+
+# Slightly different matrix, as herring have different preferred temperatures
+rcl_temp_h <- matrix(c(-Inf, 0, 0,
+                0, 10, 1,
+                10, Inf, 0), 
+                ncol = 3, byrow = TRUE)
+
+herring_temp <- classify(herring_temp, rcl = rcl_temp_h)
+print(unique(values(herring_temp)))
+
+herring_temp <- as.factor(herring_temp)
+```
+
+```{r, Herring Depth}
+herring_depth <- elevation
+
+# Slightly different matrix, as herring have different preferred depths
+rcl_depth_h <- matrix(c(-Inf, -1300, 0,
+                -1300, 0, 1,
+                0, Inf, 0), 
+                ncol = 3, byrow = TRUE)
+
+herring_depth <- classify(herring_depth, rcl = rcl_depth_h)
+
+herring_depth <- as.factor(herring_depth)
+```
+
+```{r, Herring Territory Raster}
+herring_territory <- (herring_depth * herring_temp)
+
+herring_territory <- as.factor(herring_territory)
+
+values(herring_territory)[values(herring_territory) == 0] <- NA
+
+eez <- st_transform(eez, crs = crs(herring_territory))
+
+eez_raster <- rasterize(eez, herring_territory, field = "rgn_id")
+
+herring_eez <- (herring_territory * eez_raster)
+```
+
+```{r, Herring Territory Info}
+herring_territory <- project(herring_eez, "EPSG:3395")
+
+cell_size <- res(herring_territory)
+
+cell_area_m2 <- prod(cell_size)
+
+cell_area_km2 <- cell_area_m2 / 1000000
+
+value_counts <- freq(herring_territory)
+
+value_counts$area_km2 <- value_counts$count * cell_area_km2
+
+colnames(value_counts)[colnames(value_counts) == "value"] <- "rgn_id"
+
+region_info <- eez %>%
+  st_drop_geometry()
+
+value_counts <- region_info %>%
+  left_join(value_counts, by = "rgn_id") %>%
+  dplyr::select(-area_m2, -area_km2.x, -layer, -rgn_key) %>%
+  mutate(across(everything(), ~replace(., is.na(.), 0)))
+
+kableExtra::kable(value_counts, 
+                  format = "simple", 
+                  col.names = c("Region", 
+                                "Region ID", 
+                                "Cell Count", 
+                                "Area, Km^2"), 
+                  caption = "Suitable Herring Cultivation Territory in West Coast EEZs",
+                  align = "l",
+                  digits = 2)
+```
 
 
 
