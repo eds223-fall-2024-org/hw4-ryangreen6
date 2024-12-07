@@ -219,13 +219,13 @@ oyster_temp <- as.factor(oyster_temp)
 oyster_depth <- elevation
 
 # Establishing reclassification matrix for oyster_depth
-rcl_depth <- matrix(c(-Inf, -70, 0,
+rcl_depth_fun <- matrix(c(-Inf, -70, 0,
                 -70, 0, 1,
                 0, Inf, 0), 
                 ncol = 3, byrow = TRUE)
 
 # Reclassifying oyster_depth based on the matrix
-oyster_depth <- classify(oyster_depth, rcl = rcl_depth)
+oyster_depth <- classify(oyster_depth, rcl = rcl_depth_fun)
 
 # Overwriting oyster_depth values as factor
 oyster_depth <- as.factor(oyster_depth)
@@ -401,12 +401,12 @@ herring_temp <- as.factor(herring_temp)
 herring_depth <- elevation
 
 # Slightly different matrix, as herring have different preferred depths
-rcl_depth_h <- matrix(c(-Inf, -1300, 0,
+rcl_depth_fun_h <- matrix(c(-Inf, -1300, 0,
                 -1300, 0, 1,
                 0, Inf, 0), 
                 ncol = 3, byrow = TRUE)
 
-herring_depth <- classify(herring_depth, rcl = rcl_depth_h)
+herring_depth <- classify(herring_depth, rcl = rcl_depth_fun_h)
 
 herring_depth <- as.factor(herring_depth)
 ```
@@ -514,6 +514,13 @@ tm_compass(type = "arrow",
            color.light = "#F6EAC7") 
 ```
 
+
+# Function
+
+```{r}
+
+
+```
 
 
 
